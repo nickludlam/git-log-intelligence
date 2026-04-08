@@ -8,7 +8,10 @@ description: >
   bot/CI/chore noise automatically.
 compatibility:
   required_tools:
-    - gh  # GitHub CLI — install via https://cli.github.com or `brew install gh`
+    - gh
+  environment_variables:
+    - GH_TOKEN
+    - GITHUB_PERSONAL_ACCESS_TOKEN
 ---
 
 ## Prerequisites
