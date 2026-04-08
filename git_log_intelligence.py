@@ -76,10 +76,13 @@ def get_summary(repo, days, full_context=False, verbose=False):
     filters = load_filters()
     since_date = (datetime.now() - timedelta(days=int(days))).isoformat(timespec="seconds") + "Z"
     
-    # Check for GitHub token in environment (OpenClaw provides GITHUB_PERSONAL_ACCESS_TOKEN)
+    # Authenticate gh strictly via OpenClaw's token convention.
     env = os.environ.copy()
-    if "GITHUB_PERSONAL_ACCESS_TOKEN" in env and "GH_TOKEN" not in env:
-        env["GH_TOKEN"] = env["GITHUB_PERSONAL_ACCESS_TOKEN"]
+    token = env.get("GITHUB_PERSONAL_ACCESS_TOKEN")
+    if not token:
+        return "Error: GITHUB_PERSONAL_ACCESS_TOKEN is required for GitHub API access."
+    # GH CLI uses GH_TOKEN for authentication, so we set it here to ensure it works in subprocess calls.
+    env["GH_TOKEN"] = token
     
     # Fetching commits via GH API
     cmd = ["gh", "api", f"repos/{repo}/commits?since={since_date}", "--paginate"]
