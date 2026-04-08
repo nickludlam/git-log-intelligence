@@ -3,18 +3,45 @@ import json
 import re
 import os
 import argparse
+import sys
 from datetime import datetime, timedelta
 
-CONFIG_PATH = ".config/git_filters.json"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), ".config", "git_filters.json")
 MAX_MSG_LEN = 1000  # Character limit per commit for the LLM context
 MAX_LINES = 200  # Max number of commits to include in summary (after filtering)
+
+def parse_paginated_json_array(raw_output):
+    """Parse one or more concatenated JSON values and merge arrays into a list."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    length = len(raw_output)
+    merged = []
+
+    while idx < length:
+        # Skip inter-page whitespace/newlines between concatenated JSON values.
+        while idx < length and raw_output[idx].isspace():
+            idx += 1
+
+        if idx >= length:
+            break
+
+        value, next_idx = decoder.raw_decode(raw_output, idx)
+        if isinstance(value, list):
+            merged.extend(value)
+        else:
+            raise ValueError("Expected a JSON array from gh api commits endpoint")
+        idx = next_idx
+
+    return merged
 
 def load_filters():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r') as f:
                 return json.load(f).get("ignore_patterns", [])
-        except: return []
+        except Exception as e:
+            print(f"Warning: Failed to load filters from {CONFIG_PATH}: {e}", file=sys.stderr)
+            return []
     return ["^chore", "^docs", "Merge branch"]
 
 def save_filter(pattern):
@@ -38,6 +65,7 @@ def remove_filter(pattern):
     filters = set(load_filters())
     if pattern in filters:
         filters.remove(pattern)
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, 'w') as f:
             json.dump({"ignore_patterns": list(filters)}, f, indent=2)
         print(f"✅ Removed ignore pattern: {pattern}")
@@ -64,8 +92,14 @@ def get_summary(repo, days, full_context=False, verbose=False):
     if result.returncode != 0:
         return f"Error: {result.stderr}"
 
-    commits = json.loads(result.stdout)
-    important, ignored = [], 0
+    try:
+        commits = parse_paginated_json_array(result.stdout)
+    except (json.JSONDecodeError, ValueError) as e:
+        return f"Error parsing GitHub API response: {e}"
+
+    important = []
+    filtered_out = 0
+    capped_out = 0
 
     for c in commits:
         full_msg = c['commit']['message']
@@ -73,7 +107,7 @@ def get_summary(repo, days, full_context=False, verbose=False):
         
         # 1. Filter based on subject line
         if any(re.search(p, subject, re.IGNORECASE) for p in filters):
-            ignored += 1
+            filtered_out += 1
             continue
         
         # 2. Collect data based on flag
@@ -81,7 +115,7 @@ def get_summary(repo, days, full_context=False, verbose=False):
         author = c['commit']['author']['name']
         
         if len(important) >= MAX_LINES:
-            ignored += 1
+            capped_out += 1
             continue
         
         if full_context:
@@ -92,8 +126,17 @@ def get_summary(repo, days, full_context=False, verbose=False):
             important.append(f"- {sha}: {subject} ({author})")
 
     header = f"### Summary for {repo}.\n\n"
-    footer = f"\n\n*Displayed {len(important)}/{len(commits)} commits (ignored {ignored} commits based on filters or overflow).*"
-    return header + "\n".join(important) + footer
+    warning = ""
+    if capped_out > 0:
+        warning = (
+            f"\n\nWARNING: Output capped at MAX_LINES={MAX_LINES}. "
+            f"{capped_out} additional non-filtered commits are not shown."
+        )
+    footer = (
+        f"\n\n*Displayed {len(important)}/{len(commits)} commits "
+        f"(filtered: {filtered_out}, capped by MAX_LINES: {capped_out}).*"
+    )
+    return header + "\n".join(important) + warning + footer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Git Log Intelligence Tool - Summarize recent commits with filtering capabilities")
